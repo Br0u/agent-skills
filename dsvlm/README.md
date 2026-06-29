@@ -99,7 +99,7 @@ printf '%s\n' '算法: 垃圾车识别
 
 ## 鉴权
 
-本地鉴权配置放在 `.env`，不要写进文档或提交记录。动态鉴权说明见 `references/posting.md`。
+本地鉴权配置放在当前安装的 `dsvlm/.env`，不要写进文档或提交记录。动态鉴权说明见 `references/posting.md`。
 
 配置入口：
 

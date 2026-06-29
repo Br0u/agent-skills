@@ -21,7 +21,7 @@ description: 当用户需要在华鲲元启 AI 平台的视频解析、策略中
 
 - 用户请求是 `/dsvlm --config`、`--config` 或明确说配置鉴权时，只处理 `.env` 配置，不生成算法方案。
 - 配置鉴权时，打开新窗口运行 `scripts/configure_env_from_curl.command`。
-- 配置窗口会依次提示粘贴 `auto-login-url`、`login`、`theme data page` 三段 DevTools `Copy as cURL`，自动写入 `.env`。
+- 配置窗口会依次提示粘贴 `auto-login-url`、`login`、`theme data page` 三段 DevTools `Copy as cURL`，自动写入当前安装的 `dsvlm/.env`。
 - 新窗口打开后，告诉用户在窗口完成三轮粘贴，再回到当前 agent 继续问答。
 - `post_theme_config.py --config payload.json --post` 只表示用 JSON payload 提交，和 `/dsvlm --config` 不是同一个入口。
 
