@@ -15,12 +15,14 @@ import secrets
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
 DEFAULT_API_BASE = "http://61.172.168.94:8898"
 DEFAULT_ENDPOINT = "/s/theme/data"
 DEFAULT_DATA_PAGE_ENDPOINT = "/s/theme/data/page"
+DEFAULT_DATA_DETAIL_ENDPOINT = "/s/theme/data/{id}"
 DEFAULT_THEME_TYPE_ID = "8faeefc246be36d2db59558bed823122"
 DEFAULT_SM2_PUBLIC_KEY = (
     "040a302b5e4b961afb3908a4ae191266ac5866be100fc52e3b8dba9707c8620e64ae790ceffc"
@@ -62,6 +64,16 @@ PARSING_ID_MAP = {
     ("文字理解", "OCR"): "ocr",
     ("文字理解", "文字理解"): "ocr",
     ("逻辑理解", "或者"): "logic_or",
+    ("逻辑理解", "前置条件结束"): "logic_pre",
+    ("逻辑理解", "输出分支预警"): "logic_branch",
+    ("逻辑理解", "输出其他预警"): "logic_else",
+    ("逻辑理解", "预警结果反转"): "alarm_reverse",
+    ("逻辑理解", "预警内容输出"): "alarm_ocr",
+    ("逻辑理解", "预警结果数量"): "alarm_counter",
+    ("逻辑理解", "预警框内目标数量"): "alarm_inner",
+    ("逻辑理解", "预警内容描述"): "alarm_msg",
+    ("全结构化理解", "全结构化理解"): "all_struct",
+    ("全结构化理解", "全结构化理解-深度"): "all_struct_dec",
 }
 TARGET_NAME_MAP = {
     "人": "person",
@@ -147,7 +159,7 @@ def _user_requested_sort(user_request):
 
 def _normalize_rule_list(value):
     if not value:
-        return [{"parsingId": "1", "rule": ""}]
+        value = [{"parsingId": "1", "rule": ""}]
     if isinstance(value, str):
         value = json.loads(value)
 
@@ -157,8 +169,13 @@ def _normalize_rule_list(value):
         rules.append({
             "parsingId": str(parsing_id),
             "rule": item.get("rule", ""),
+            "monitoringAreaCode": item.get("monitoringAreaCode", ""),
+            "ratio": item.get("ratio", 0.0),
+            "ratioY": item.get("ratioY", 0.0),
+            "ratioMax": item.get("ratioMax", 100.0),
+            "ratioYMax": item.get("ratioYMax", 100.0),
         })
-    return rules or [{"parsingId": "1", "rule": ""}]
+    return rules or _normalize_rule_list([{"parsingId": "1", "rule": ""}])
 
 
 def build_payload(**kwargs):
@@ -308,7 +325,7 @@ def _platform_rule(raw_rule):
     if module == "目标理解":
         rule = _target_rule(component, parts[2:])
     elif module == "逻辑理解":
-        rule = ""
+        rule = " / ".join(parts[2:]).strip()
     else:
         rule = " / ".join(parts[2:]).strip()
         if not rule:
@@ -332,16 +349,40 @@ def _condition_rules(text):
 
 def parse_user_request(user_request):
     """解析默认调用格式：场景：xx --算法名 --post。"""
+    text = user_request or ""
+    post = bool(re.search(r"(?:^|\s)--\s*post(?=\s+--\s*d\s*[:：]|\s*$)", text))
+    text_without_post = re.sub(r"(?:^|\s)--\s*post(?=\s+--\s*d\s*[:：]|\s*$)", " ", text).strip()
+    description = ""
+    description_match = re.search(r"(?:^|\s)--\s*d\s*[:：]\s*([\s\S]+?)\s*$", text_without_post)
+    if description_match:
+        description = description_match.group(1).strip()
+        text_without_post = text_without_post[:description_match.start()].strip()
+    update_match = re.search(
+        r"(?:^|\s)--\s*(.+?)\s+--\s*update(?:\s+--)?\s*(.+?)\s*$",
+        text_without_post,
+    )
+    if update_match:
+        return {
+            "scene": "",
+            "algorithm_name": update_match.group(1).strip(),
+            "post": post,
+            "update": True,
+            "update_requirement": update_match.group(2).strip(),
+            "description": description,
+        }
     match = re.search(
-        r"场景\s*[:：]\s*(.+?)(?:\s+--\s*(.+?))?(?:\s+--\s*(post))?\s*$",
-        user_request or "",
+        r"场景\s*[:：]\s*(.+?)(?:\s+--\s*(.+?))?\s*$",
+        text_without_post,
     )
     if not match:
-        return {"scene": "", "algorithm_name": "", "post": False}
+        return {"scene": "", "algorithm_name": "", "post": False, "update": False, "update_requirement": "", "description": description}
     return {
         "scene": (match.group(1) or "").strip(),
         "algorithm_name": (match.group(2) or "").strip(),
-        "post": (match.group(3) or "").lower() == "post",
+        "post": post,
+        "update": False,
+        "update_requirement": "",
+        "description": description,
     }
 
 
@@ -533,13 +574,34 @@ def _headers_for_timestamp(headers, timestamp_ms):
     return headers
 
 
-def post_payload(api_base, endpoint, payload, headers, timeout):
+def post_payload(api_base, endpoint, payload, headers, timeout, method="POST"):
     """统一 POST 入口；写入和只读列表都走这里，避免鉴权逻辑分叉。"""
     timestamp_ms = int(time.time() * 1000)
     url = "%s%s?t=%d" % (api_base.rstrip("/"), endpoint, timestamp_ms)
     headers = _headers_for_timestamp(headers, timestamp_ms)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        return {
+            "url": url,
+            "status_code": response.status,
+            "success": response.status == 200 and (not isinstance(parsed, dict) or parsed.get("code") == 0),
+            "response_text": text,
+            "response_json": parsed,
+        }
+
+
+def get_payload(api_base, endpoint, headers, timeout):
+    """统一 GET 入口；用于读取单条算法详情。"""
+    timestamp_ms = int(time.time() * 1000)
+    url = "%s%s?t=%d" % (api_base.rstrip("/"), endpoint, timestamp_ms)
+    headers = _headers_for_timestamp(headers, timestamp_ms)
+    request = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         text = response.read().decode("utf-8", errors="replace")
         try:
@@ -576,6 +638,16 @@ def _theme_total(result):
     return _as_int(data.get("total"), 0)
 
 
+def _theme_detail(result):
+    parsed = result.get("response_json")
+    if not isinstance(parsed, dict):
+        return {}
+    data = parsed.get("data")
+    if isinstance(data, dict):
+        return data
+    return parsed if parsed.get("id") else {}
+
+
 def find_existing_theme(api_base, theme_label, timeout):
     """只读查同名算法；用于避免低性能模型重复提交。"""
     for item in fetch_existing_themes(api_base, timeout, theme_label=theme_label, limit=100):
@@ -594,6 +666,15 @@ def fetch_existing_theme_page(api_base, timeout, theme_label="", limit=200):
     result = post_payload(api_base, endpoint, payload, _base_headers(api_base), timeout)
     if not result.get("success"):
         raise RuntimeError("读取现有算法列表失败，已停止提交")
+    return result
+
+
+def fetch_theme_detail(api_base, timeout, theme_id):
+    endpoint_template = _setting("DSVLM_DATA_DETAIL_ENDPOINT", DEFAULT_DATA_DETAIL_ENDPOINT)
+    endpoint = endpoint_template.format(id=urllib.parse.quote(str(theme_id), safe=""))
+    result = get_payload(api_base, endpoint, _base_headers(api_base), timeout)
+    if not result.get("success"):
+        raise RuntimeError("读取算法详情失败，已停止更新")
     return result
 
 
@@ -648,6 +729,50 @@ def _already_exists_result(payload, existing):
         "themeLabel": label,
         "existing": _theme_summary(existing),
     }
+
+
+def _update_target_not_found_result(payload):
+    label = payload.get("themeLabel", "")
+    return {
+        "success": False,
+        "status": "UPDATE_TARGET_NOT_FOUND_NOT_POSTED",
+        "posted": False,
+        "message": "未找到同名算法，已停止；update 模式不会新建算法。",
+        "themeLabel": label,
+    }
+
+
+def _apply_existing_for_update(payload, existing, auto_sort=False):
+    existing_id = existing.get("id")
+    if not existing_id:
+        raise ValueError("现有算法缺少 id，无法执行修改保存")
+    merged = build_payload()
+    for key in merged:
+        if key in existing:
+            merged[key] = existing[key]
+        elif key in payload:
+            merged[key] = payload[key]
+    replace_keys = {
+        "themeLabel",
+        "areaFlag",
+        "level",
+        "mode",
+        "remark",
+        "rule",
+        "ruleList",
+        "sort",
+        "extensionRatio",
+        "targetExtensionRatio",
+    }
+    for key in replace_keys:
+        if key in payload:
+            merged[key] = payload[key]
+    merged["id"] = existing_id
+    if existing.get("themeTypeId"):
+        merged["themeTypeId"] = existing["themeTypeId"]
+    if auto_sort and existing.get("sort") not in (None, ""):
+        merged["sort"] = _as_int(existing.get("sort"), merged.get("sort", 1))
+    return merged
 
 
 def _base_headers(api_base):
@@ -856,6 +981,20 @@ def fetch_theme_data_page(**kwargs):
     return result
 
 
+def fetch_theme_data_detail(**kwargs):
+    """只读单条算法详情，用于 update 前拿完整原配置。"""
+    api_base = kwargs.get("api_base") or _setting("DSVLM_API_BASE", DEFAULT_API_BASE)
+    timeout = _as_int(kwargs.get("timeout") or _setting("DSVLM_TIMEOUT"), 30)
+    if _as_bool(kwargs.get("ensure_auth"), True):
+        auth_result = ensure_authorization(api_base, timeout)
+        if not auth_result.get("success"):
+            return auth_result
+    result = fetch_theme_detail(api_base, timeout, kwargs["theme_id"])
+    result["response_text"] = _mask_text(result["response_text"])
+    result["response_json"] = _mask_obj(result["response_json"])
+    return result
+
+
 def main(**kwargs):
     """默认 dry-run；只有 dry_run=False 时才提交 /s/theme/data。"""
     api_base = kwargs.get("api_base") or _setting("DSVLM_API_BASE", DEFAULT_API_BASE)
@@ -863,9 +1002,10 @@ def main(**kwargs):
     authorization = kwargs.get("authorization") or _setting("DSVLM_AUTHORIZATION")
     dry_run = _as_bool(kwargs.get("dry_run"), True)
     timeout = _as_int(kwargs.get("timeout") or _setting("DSVLM_TIMEOUT"), 30)
-    if not kwargs.get("payload") and "sort" not in kwargs:
+    if not kwargs.get("payload") and "sort" not in kwargs and "_auto_sort" not in kwargs:
         kwargs["_auto_sort"] = True
     payload = kwargs.get("payload") or build_payload(**kwargs)
+    update_existing = _as_bool(kwargs.get("update_existing", kwargs.get("_update_existing")), False)
     headers = {
         "Accept": kwargs.get("accept") or _setting("DSVLM_ACCEPT", "application/json, text/plain, */*"),
         "Accept-Language": kwargs.get("accept_language") or _setting("DSVLM_ACCEPT_LANGUAGE", "zh-CN"),
@@ -935,16 +1075,34 @@ def main(**kwargs):
         }
 
     try:
-        if skip_existing and not force_post and payload.get("themeLabel"):
+        if update_existing and payload.get("themeLabel"):
+            existing = find_existing_theme(api_base, payload["themeLabel"], timeout)
+            if not existing:
+                return {"api_result": [_update_target_not_found_result(payload)]}
+            detail = _theme_detail(fetch_theme_detail(api_base, timeout, existing["id"]))
+            detail = dict(existing, **detail)
+            payload = _apply_existing_for_update(
+                payload,
+                detail,
+                _as_bool(kwargs.get("_auto_sort"), False),
+            )
+        elif skip_existing and not force_post and payload.get("themeLabel"):
             existing = find_existing_theme(api_base, payload["themeLabel"], timeout)
             if existing:
                 return {"api_result": [_already_exists_result(payload, existing)]}
-        if _as_bool(kwargs.get("_auto_sort"), False):
+        if _as_bool(kwargs.get("_auto_sort"), False) and not update_existing:
             # ponytail: one list read; page through only if the platform proves 200 is too small.
             payload["sort"] = next_sort_after_existing(api_base, timeout)
-        result = post_payload(api_base, endpoint, payload, headers, timeout)
+        result = post_payload(
+            api_base,
+            endpoint,
+            payload,
+            headers,
+            timeout,
+            method="PUT" if update_existing else "POST",
+        )
         if result.get("success"):
-            result["status"] = "POST_SUCCEEDED_DO_NOT_RETRY"
+            result["status"] = "UPDATE_SUCCEEDED_DO_NOT_RETRY" if update_existing else "POST_SUCCEEDED_DO_NOT_RETRY"
             result["posted"] = True
             result["message"] = "平台已返回 success；不要再次 post。"
         else:
@@ -1032,6 +1190,16 @@ def _self_test():
     assert _platform_rule("内容理解 / 正向思维20 / 正向思维20") == {"parsingId": "21", "rule": "正向思维20"}
     assert _platform_rule("内容理解 / 反向思维2 / 反向思维2") == {"parsingId": "12", "rule": "反向思维2"}
     assert _platform_rule("内容理解 / 反向思维20 / 反向思维20") == {"parsingId": "22", "rule": "反向思维20"}
+    assert _platform_rule("逻辑理解 / 前置条件结束") == {"parsingId": "logic_pre", "rule": ""}
+    assert _platform_rule("逻辑理解 / 预警内容描述 / 发现明火") == {"parsingId": "alarm_msg", "rule": "发现明火"}
+    assert _platform_rule("全结构化理解 / 全结构化理解 / 全量提取画面结构") == {
+        "parsingId": "all_struct",
+        "rule": "全量提取画面结构",
+    }
+    assert _platform_rule("全结构化理解 / 全结构化理解-深度 / 深度提取画面结构") == {
+        "parsingId": "all_struct_dec",
+        "rule": "深度提取画面结构",
+    }
     assert _platform_rule("深度内容理解 / 正向深度思维2 / 正向深度思维2") == {
         "parsingId": "103",
         "rule": "正向深度思维2",
@@ -1049,6 +1217,7 @@ def _self_test():
         "rule": "反向深度思维20",
     }
     assert build_payload(**parsed)["themeLabel"] == "垃圾车识别"
+    assert build_payload(**parsed)["ruleList"][0]["ratioMax"] == 100.0
     fixed_sort = parse_agent_output(
         sample_output.replace("排序: 自动", "排序: 7"),
         user_request=sample_request + " 排序:7",
@@ -1094,21 +1263,131 @@ def _self_test():
     assert existing_result["success"] is True
     assert existing_result["posted"] is False
     assert existing_result["status"] == "ALREADY_EXISTS_DO_NOT_RETRY"
+    update_request = "/dsvlm --识别火情 --update --灯光总是误测为火情，需要优化 --post"
+    assert parse_user_request(update_request) == {
+        "scene": "",
+        "algorithm_name": "识别火情",
+        "post": True,
+        "update": True,
+        "update_requirement": "灯光总是误测为火情，需要优化",
+        "description": "",
+    }
+    assert parse_user_request("/dsvlm 场景：识别垃圾车 --垃圾车识别 --d:只识别正在作业的垃圾车 --post") == {
+        "scene": "识别垃圾车",
+        "algorithm_name": "垃圾车识别",
+        "post": True,
+        "update": False,
+        "update_requirement": "",
+        "description": "只识别正在作业的垃圾车",
+    }
+    assert parse_user_request("/dsvlm 场景：识别垃圾车 --垃圾车识别 --post --d:只识别正在作业的垃圾车\n补充第二行") == {
+        "scene": "识别垃圾车",
+        "algorithm_name": "垃圾车识别",
+        "post": True,
+        "update": False,
+        "update_requirement": "",
+        "description": "只识别正在作业的垃圾车\n补充第二行",
+    }
+    assert parse_user_request("/dsvlm --识别火情 --update --灯光误报 --d:排除稳定灯光和车灯 --post") == {
+        "scene": "",
+        "algorithm_name": "识别火情",
+        "post": True,
+        "update": True,
+        "update_requirement": "灯光误报",
+        "description": "排除稳定灯光和车灯",
+    }
+    assert parse_user_request("/dsvlm --识别火情 --update --灯光误报 --post --d:排除稳定灯光和车灯") == {
+        "scene": "",
+        "algorithm_name": "识别火情",
+        "post": True,
+        "update": True,
+        "update_requirement": "灯光误报",
+        "description": "排除稳定灯光和车灯",
+    }
+    update_payload = build_payload(**parsed)
+    update_payload = _apply_existing_for_update(
+        update_payload,
+        {"id": "abc", "themeLabel": "垃圾车识别", "sort": "7", "coding": "keep-me"},
+        True,
+    )
+    assert update_payload["id"] == "abc"
+    assert update_payload["sort"] == 7
+    assert update_payload["coding"] == "keep-me"
+    original_find_existing_theme = find_existing_theme
+    original_fetch_theme_detail = fetch_theme_detail
+    original_post_payload = post_payload
+    original_ensure_authorization = ensure_authorization
+    posted_payloads = []
+    posted_methods = []
+    try:
+        globals()["find_existing_theme"] = lambda api_base, theme_label, timeout: {
+            "id": "abc",
+            "themeLabel": theme_label,
+            "sort": "7",
+        }
+        globals()["fetch_theme_detail"] = lambda api_base, timeout, theme_id: {
+            "success": True,
+            "response_json": {"data": {"id": theme_id, "themeLabel": "垃圾车识别", "sort": "7", "coding": "keep-me"}},
+        }
+        def fake_post_payload(api_base, endpoint, payload, headers, timeout, method="POST"):
+            posted_payloads.append(payload.copy())
+            posted_methods.append(method)
+            return {"success": True}
+        globals()["post_payload"] = fake_post_payload
+        globals()["ensure_authorization"] = lambda api_base, timeout: {"success": True}
+        post_result = main(
+            theme_label="新增算法",
+            rules=parsed["rules"],
+            dry_run=False,
+            authorization="Bearer test",
+            force_post=True,
+            update_existing=False,
+            _auto_sort=False,
+        )["api_result"][0]
+        assert post_result["status"] == "POST_SUCCEEDED_DO_NOT_RETRY"
+        assert posted_methods[0] == "POST"
+        update_result = main(
+            theme_label="垃圾车识别",
+            rules=parsed["rules"],
+            dry_run=False,
+            authorization="Bearer test",
+            update_existing=True,
+            _auto_sort=True,
+        )["api_result"][0]
+        assert update_result["status"] == "UPDATE_SUCCEEDED_DO_NOT_RETRY"
+        assert posted_payloads[1]["id"] == "abc"
+        assert posted_payloads[1]["sort"] == 7
+        assert posted_payloads[1]["coding"] == "keep-me"
+        assert posted_methods[1] == "PUT"
+    finally:
+        globals()["find_existing_theme"] = original_find_existing_theme
+        globals()["fetch_theme_detail"] = original_fetch_theme_detail
+        globals()["post_payload"] = original_post_payload
+        globals()["ensure_authorization"] = original_ensure_authorization
     assert parse_user_request(sample_request)["post"] is True
     assert parse_user_request("/dsvlm 场景：识别垃圾车 --垃圾车识别") == {
         "scene": "识别垃圾车",
         "algorithm_name": "垃圾车识别",
         "post": False,
+        "update": False,
+        "update_requirement": "",
+        "description": "",
     }
     assert parse_user_request("/dsvlm 场景：流浪猫狗 测猫狗") == {
         "scene": "流浪猫狗 测猫狗",
         "algorithm_name": "",
         "post": False,
+        "update": False,
+        "update_requirement": "",
+        "description": "",
     }
     assert parse_user_request("/dsvlm 场景：流浪猫狗 --测猫狗") == {
         "scene": "流浪猫狗",
         "algorithm_name": "测猫狗",
         "post": False,
+        "update": False,
+        "update_requirement": "",
+        "description": "",
     }
     return {"success": True}
 
@@ -1118,6 +1397,7 @@ def cli():
     parser.add_argument("--auto-login", action="store_true", help="只读取算法中心自动登录地址。")
     parser.add_argument("--refresh-auth", action="store_true", help="登录 61.172 并刷新 DSVLM_ACCESS_TOKEN。")
     parser.add_argument("--theme-data-page", action="store_true", help="只读取当前主题算法列表。")
+    parser.add_argument("--theme-data-detail", default="", help="只读取单条算法详情，传算法 id。")
     parser.add_argument("--self-test", action="store_true", help="运行本地解析自检，不访问平台。")
     parser.add_argument("--theme-label", default="", help="按算法名称过滤列表。")
     parser.add_argument("--theme-type-id", default=None, help="主题 ID；默认读取 DSVLM_THEME_TYPE_ID。")
@@ -1148,6 +1428,9 @@ def cli():
             limit=args.limit,
         ), ensure_ascii=False, indent=2))
         return
+    if args.theme_data_detail:
+        print(json.dumps(fetch_theme_data_detail(theme_id=args.theme_data_detail), ensure_ascii=False, indent=2))
+        return
     if args.self_test:
         print(json.dumps(_self_test(), ensure_ascii=False, indent=2))
         return
@@ -1174,6 +1457,7 @@ def cli():
         kwargs["api_base"] = args.api_base
     if args.endpoint:
         kwargs["endpoint"] = args.endpoint
+    kwargs["update_existing"] = request_args.get("update", False)
     print(json.dumps(main(**kwargs), ensure_ascii=False, indent=2))
 
 
