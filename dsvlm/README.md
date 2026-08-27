@@ -12,33 +12,29 @@ dsvlm/
 │   ├── platform-components.md       # 组件、字段、parsingId、解析模式
 │   ├── orchestration-patterns.md    # 常见编排套路
 │   ├── examples.md                  # 真实配置案例
-│   ├── loop-strategy.md             # loop 场景探索和方案评审策略
+│   ├── loop-strategy.md             # 场景探索和方案评审策略
 │   └── posting.md                   # 提交、鉴权、.env 说明
 └── scripts/
-    ├── configure_env_from_curl.command # 弹窗配置 .env
-    ├── setup_env_from_curl.py       # 从三段 cURL 生成 .env
-    └── post_theme_config.py         # dry-run / post 平台接口脚本
+    ├── algorithm_service.py         # 9079 算法列表 / 语义新增客户端
+    ├── configure_env.py             # 首次安装或凭据变更时维护私有 .env
+    └── post_theme_config.py         # 主题名匹配、dry-run / post 客户端
 ```
 
 ## 快速入口
 
 | 请求 | 行为 |
 | --- | --- |
-| `/dsvlm --config` | 弹出终端窗口，粘贴三段 cURL 自动配置 `.env` |
-| `/dsvlm 场景：人员落水 --loop` | 场景探索和方案评审，只输出不提交 |
-| `/dsvlm 场景：人员落水 --loop 6 --save` | loop 6 轮并保存为 Markdown，无新增会提前停止 |
-| `/dsvlm 场景：识别垃圾车 --垃圾车识别` | 只生成配置，不提交 |
-| `/dsvlm 场景：识别垃圾车 --垃圾车识别 --d:只识别正在作业的垃圾车` | 带补充描述生成配置，不提交 |
-| `/dsvlm 场景：识别垃圾车 --垃圾车识别 --post` | 明确提交 |
-| `/dsvlm 场景：识别垃圾车 --垃圾车识别 --post --d:只识别正在作业的垃圾车` | 带补充描述提交 |
-| `/dsvlm --识别火情 --update --灯光总是误测为火情，需要优化` | 读取现有算法并给出优化后的替换方案 |
-| `/dsvlm --识别火情 --update --灯光误报 --d:排除稳定灯光和车灯` | 带补充描述给出优化方案 |
-| `/dsvlm --识别火情 --update --灯光总是误测为火情，需要优化 --post` | 读取详情，优化后修改保存原算法 |
-| `/dsvlm --识别火情 --update --灯光误报 --post --d:排除稳定灯光和车灯` | 带补充描述修改已有算法 |
+| `/dsvlm 评审：人员落水` | 场景探索和方案评审，只输出不提交 |
+| `/dsvlm 新建：识别垃圾车；算法名：垃圾车识别` | 只生成配置，不提交 |
+| `/dsvlm 新建：识别垃圾车；算法名：垃圾车识别；补充：只识别正在作业的垃圾车` | 带补充描述生成配置 |
+| `/dsvlm 新建：识别垃圾车；算法名：垃圾车识别；主题：园区A --post` | 按主题名匹配 ID 后提交 |
+| `/dsvlm 优化：识别火情；问题：排除灯光误报；主题：园区A` | 读取该主题现有算法并给出替换方案 |
+| `/dsvlm 优化：识别火情；问题：排除灯光误报；主题：园区A --post` | 合并修改并保存原算法 |
 
 `--post` 必须是用户原始请求里的独立片段。Agent 自己补 `--post` 不算授权。
-`--d:` 只是详细描述或补充，推荐放全文最后；需要提交时写 `--post --d:...`。
-`--loop` 永远不上传；默认 2 轮，不设硬性最大轮数；只有带 `--save` 才保存到 `loop_outputs/`，无新增会提前停止。
+`主题：...` 完全由用户填写，可为 `wbr`、`园区A` 或其他名称。DSVLM 去掉首尾空格后做区分大小写的精确匹配，不设固定主题。
+主题不存在、同名对应多个 ID、目录鉴权失败或名称与显式 ID 不一致时，停止读取和提交。
+旧的 `--loop`、`--save`、`--update`、`--d:` 已移除；用户旗标只保留请求末尾的 `--post`。
 
 ## 规则入口
 
@@ -50,9 +46,9 @@ dsvlm/
 | `references/examples.md` | 历史实测案例 |
 | `references/loop-strategy.md` | 场景探索和方案评审策略 |
 | `references/posting.md` | 提交、鉴权、`.env` 说明 |
+| `scripts/algorithm_service.py` | 9079 算法列表 / 语义新增接口 |
 | `scripts/post_theme_config.py` | dry-run / post 平台接口 |
-| `scripts/configure_env_from_curl.command` | 弹窗配置 `.env` |
-| `scripts/setup_env_from_curl.py` | 从三段 cURL 生成 `.env` |
+| `scripts/configure_env.py` | 内部维护工具：首次安装、`.env` 丢失或凭据变更时安全写入配置 |
 
 ## 输出格式
 
@@ -66,6 +62,8 @@ Skill 默认生成 Markdown 表格：
 | 预警等级 | 二级预警 |
 | 启用区域框 | 开 |
 | 排序 | 自动 |
+| 添加到门户 | 关 |
+| 对接编码 |  |
 | 思维条件1 | 目标理解 / 多模态目标理解 / garbage truck / 大于 / 0 / 阈值 60 |
 | 备注 | ... |
 ```
@@ -74,90 +72,141 @@ Skill 默认生成 Markdown 表格：
 
 ## 提交流程
 
-脚本支持三种输入。默认 post 必须用 stdin：
-
-| 输入 | 用途 |
-| --- | --- |
-| `--agent-output -` | 默认方式，读 stdin，适合自动化和并发 |
-| `--agent-output output.txt` | 只在特别要求调试、复现、留档时使用 |
-| `--config payload.json` | 读 JSON |
-
-Agent 提交时直接把刚生成的最终表格传给 stdin，不要先写 `output.txt`：
+Markdown 表格只用于回复展示。脚本提交只接受 stdin 中的结构化 JSON，避免空字段串行、表格转义和旧文件残留影响真实写入：
 
 ```bash
-printf '%s\n' '算法: 垃圾车识别
-解析模式: 通用模式
-预警等级: 二级预警
-启用区域框: 开
-排序: 自动
-思维条件1: 目标理解 / 多模态目标理解 / garbage truck / 大于 / 0 / 阈值 60
-备注: 自动解析测试' \
+printf '%s\n' '{
+  "algorithm": "垃圾车识别",
+  "mode": "通用模式",
+  "level": "二级预警",
+  "area_flag": true,
+  "sort": "auto",
+  "conditions": [
+    "目标理解 / 多模态目标理解 / garbage truck / 大于 / 0 / 阈值 60"
+  ],
+  "remark": "自动解析测试"
+}' \
 | python3 scripts/post_theme_config.py \
-  --agent-output - \
-  --user-request '/dsvlm 场景：识别垃圾车 --垃圾车识别 --post'
+  --payload - \
+  --user-request '/dsvlm 新建：识别垃圾车；算法名：垃圾车识别；主题：园区A --post'
 ```
 
-`output.txt` 只是调试用中转文件，不是 agent 回复的自动存储位置；除非特别要求，不要作为 post 主流程。
+脚本从原始请求读取主题名并实时解析 `themeTypeId`。主题解析只决定目标主题；写入门禁仍是用户原始请求里的独立 `--post`。
+更新已有算法时，只覆盖 JSON 中明确提供的字段；显式的 `false` 和空字符串会生效，未提供字段保留平台原值。
 
 ## 关键规则
 
 - 解析模式按任务结构选，不机械默认通用或深度。
-- 具体物体锚点优先用英文 `目标理解 / 多模态目标理解`；动作、状态、关系用 `内容理解` 或 `深度内容理解`。
+- 具体物体和人员身份锚点默认用英文 `目标理解 / 多模态目标理解`，包括 `person`、`car`、`underage people`；动作、状态、关系用 `内容理解` 或 `深度内容理解`。
 - 新算法先拆三层：可见锚点、语义复核、必要时的窄反向排除。
 - 细动作和高误报交互可用普通正向思维 + 正向深度思维双校验。
-- 解析模式按任务选：简单锚点用通用，整图事件用深度解析，多锚点局部交互可用深度串行。
+- 解析模式按任务选：简单锚点用通用；深度解析的后续判断只在锚点目标框及延伸区域内进行；深度串行的后一目标也只在前一目标的局部区域内继续识别。
 - 只有 `目标理解 / 通用目标理解` 和 `目标理解 / 多模态目标理解` 会给检测物体套框。
 - 多条件默认按 AND 执行；只有任一独立分支成立就预警时才加 `逻辑理解 / 或者`。
 - `逻辑理解 / 或者` 按编程语言 `||` 理解：它分隔完整条件分支，公共前提和公共排除项必须在每个分支重复。
-- `目标理解` 最后的数字是置信度，不是目标数量。
+- 同名算法只能在已确定的同一主题内查重或复用；其他主题的同名算法不是复用对象。
+- `目标理解` 必须分别填写数量和显式 `阈值 N`；不要把两者混为一项。
 - `启用区域框` 是只检测画面指定区域，不是全画幅。
-- 阈值不是固定 50；远近比、延伸比例只是扩展目标上下文，不是业务条件。
+- 预警等级共五级：一级最严重，五级为仅检测；按业务风险填写，不要把三级当成唯一可用等级。
+- 有实测反例时，先调阈值、远近比、延伸比例和解析模式，再改提示词或加反向条件；大场景小目标可考虑分屏检测。
+- 阈值不是固定 50；远近比按目标框的相对大小过滤结果，延伸比例才是扩大锚点目标的后续识别范围。
 - `添加到门户` 不默认开启，只有用户要求或重点展示类算法才开。
 - 未佩戴、脸部、表情类任务先确认关键部位可见，再判断缺失或异常。
 - 持械、暴力、事故、翻越、拉横幅、载人等事件类任务要补动作或事件复核，不要只并列写目标。
 - 反向思维主要用于调试误报，不要默认添加。
 
-## 鉴权
+## 主题与鉴权
 
-本地鉴权配置放在 `.env`，不要写进文档或提交记录。动态鉴权说明见 `references/posting.md`。
+本地鉴权配置放在当前安装的 `dsvlm/.env`。该私有文件已被 Git 忽略；文档、示例和提交记录不得包含真实 token、Cookie 或密码。
 
-配置入口：
+- 9079 算法服务：`DSVLM_SERVICE_TOKEN` 由客户端从进程环境或私有 `.env` 自动读取，调用方/用户通常不传 token。
+- 8898 主题详细配置：私有 `.env` 只需长期保存 `DSVLM_LOGIN_USERNAME`、`DSVLM_LOGIN_PASSWORD`、`DSVLM_ALLOW_INSECURE_HTTP`；脚本登录后维护运行时 `DSVLM_ACCESS_TOKEN`。
+- 主题目录：与详细配置共用 8898 鉴权，直接读取 `GET /s/theme/type/all`，不再需要独立目录凭据。
+
+密码加密、动态 Authorization、验证码和请求端点的细节统一记录在 `references/posting.md`，README 不重复维护协议说明。
+
+`scripts/configure_env.py` 不是日常用户入口，只在首次安装、`.env` 丢失或凭据变更时由维护者运行：
 
 ```bash
-open scripts/configure_env_from_curl.command
+python3 scripts/configure_env.py
 ```
 
-`--theme-data-page` 和真实 post 会优先复用现有 token，探活失败才刷新一次；通常不用手动跑 `--refresh-auth`。
+真实 post 按主题名读取目录成功后不再重复探活；同名查重和自动排序复用同一次主题分页结果。通常不用手动跑 `--refresh-auth`。
+
+8898 直登会携带账号密码，明文 HTTP 默认拒绝，且不跟随重定向。只在确认目标主机和当前网络可信后，才可在已忽略的私有 `.env` 中设置 `DSVLM_ALLOW_INSECURE_HTTP=true`；`.env.example` 必须继续保持 `false`。
+
+`http://61.172.168.94:8898/#/data-task/task` 是前端路由；当前主题目录 API 已确认为 `GET /s/theme/type/all`。
+
+9079 当前是明文 HTTP。只有确认目标主机和当前网络可信后，才可在已忽略的私有 `.env` 中设置 `DSVLM_SERVICE_ALLOW_INSECURE_HTTP=true`；`.env.example` 必须继续保持 `false`。完成该显式授权后才能运行：
+
+```bash
+python3 scripts/algorithm_service.py --list
+python3 scripts/algorithm_service.py --add --name '穿黑衣的人' --text '识别穿黑衣的人' --type 1
+```
+
+`type=99` 时 `typeDescription` 必须至少包含一个中文字符（CLI：`--type-description`）。9079 `--add` 不接收 `themeTypeId`，不能替代需要明确主题的 8898 主题内上传。
 
 常用检查：
 
 | 命令 | 用途 |
 | --- | --- |
-| `python3 scripts/post_theme_config.py --self-test` | 本地解析自检，不访问平台 |
-| `python3 scripts/post_theme_config.py --theme-data-page` | 读取当前主题算法列表 |
-| `python3 scripts/post_theme_config.py --theme-data-page --theme-label '识别火情'` | 按算法名读取现有配置，用于 update 优化 |
+| `python3 scripts/post_theme_config.py --theme-data-page --theme-name '园区A'` | 按主题名读取算法列表 |
+| `python3 scripts/post_theme_config.py --theme-data-page --theme-name '园区A' --theme-label '识别火情'` | 按主题名解析后读取算法，用于优化 |
 | `python3 scripts/post_theme_config.py --theme-data-detail '算法id'` | 按 id 读取单条算法详情，用于 update 保存前合并原配置 |
 
-update 模式不加 `--post` 只输出；加 `--post` 时脚本会查同名算法、读取旧详情、合并修改后用 `PUT /s/theme/data` 保存，避免新建同名算法。
+优化模式不加 `--post` 只输出；加 `--post` 时脚本会查同名算法、读取旧详情、合并修改后用 `PUT /s/theme/data` 保存，避免新建同名算法。
 
 ## 注意
 
 - `SKILL.md` 是唯一正式 skill 入口。
 - 不要保存 Authorization、Cookie、access token 到 README 或 references。
-- 并发 post 时避免共享 `output.txt`；排序自动递增可能仍有竞态，必要时显式指定排序。
+- 真实 post 不得依赖默认主题；主题缺失或歧义时停止。
+- 并发 post 时自动排序仍可能有竞态；高并发写入时显式指定排序。
 
 ## 更新日志
+
+### 2026-08-27
+
+- 提交入口收敛为 `--payload - --user-request '原始请求'`：stdin 只接收结构化 JSON；删除 Markdown 提交解析、文件配置、CLI `--post`、`--force-post` 和手工接口/鉴权覆盖参数。
+- 优化已有算法时只覆盖 JSON 明确提供的字段，修复未填写字段被默认值重置，以及 `portalFlag`、`dockingCode` 无法显式清空的问题。
+- 目标规则必须显式填写数量和 `阈值 N`；删除缺阈值时生成错误置信度的隐式路径，并修复空条件行吞掉下一行。
+- 写入前的同名查重和自动排序复用同一次主题分页；主题目录读取成功后不再重复鉴权探活。
+- 登录失败时检查平台验证码开关；启用时返回 `CAPTCHA_REQUIRED` 并停止，不尝试绕过验证码。
+- 明确 8898 只长期配置账号、密码和 HTTP 安全开关，`DSVLM_ACCESS_TOKEN` 由脚本运行时刷新；`.env.example` 不保存运行时 token。
+- 主题目录改为 8898 `GET /s/theme/type/all`，删除 8108 目录登录和独立目录环境变量。
+- `/s/sys/auth/login` 密码按前端规则使用 SM2 加密，并在验证码关闭时提交空 `key` 和 `captcha`。
+- 当前 8898 实测确认主题记录字段为 `id` 和 `themeName`，主题名仍按用户输入精确匹配。
+
+### 2026-08-26
+
+- 8898 鉴权改为管理员账号密码直登 `/s/sys/auth/login`；删除需 8108 token 的 `auto-login-url` 路径、`--auto-login` 和三段 cURL 配置。
+- 删除公开的 `/dsvlm 配置` 动作和 `configure_env.command`；仅保留内部 `configure_env.py`，用于首次安装、`.env` 丢失或凭据变更。
+- 私有 `.env` 当时保留了直登和临时目录配置（另保留独立的 `DSVLM_SERVICE_*` 配置）；该临时目录配置已于 2026-08-27 删除。
+- 当时临时使用 8108 主题目录；8898 服务恢复后已完成真实接口确认和替换。
+- `.env` 支持 JSON 双引号值并保留尾随空格，避免特殊密码被无声改写。
+- 简化用户调用为 `评审：...`、`新建：...`、`优化：...` 三种动作；删除 `--loop`、`--save`、`--update`、`--d:` 兼容路径，只保留末尾独立 `--post`。
+- DSVLM 新增独立主题目录查询：根据用户自定义的 `主题：...` 实时、区分大小写精确匹配 `themeTypeId`，`wbr` 仅是普通示例，不是默认值。
+- 未找到、同名多 ID、目录鉴权失败或主题名与显式 ID 不一致时停止写入；删除隐藏 `DSVLM_THEME_TYPE_ID` 配置。
+- 明确锚点的局部识别范围只适用于深度解析和深度串行解析；后续条件在锚点目标框及延伸区域内处理，不套用到通用模式。
+- 纠正远近比与延伸比例的定义：远近比按目标框的相对大小过滤结果，延伸比例扩大锚点目标的后续识别范围。
+- 补充“先识别 `person`，再在该目标框及延伸区域内识别 `glasses`”的深度串行解析示例。
+
+### 2026-07-16
+
+- 根据《视觉大模型基座平台-场景算法编写介绍》补充预警等级五级语义、目标阈值/远近比起始经验和平台目标验证路径。
+- 补充整图延伸比例与自定义延伸比例的基准差异、区域编码联动规则、分屏检测和全量解析的资源边界。
+- 补充逻辑辅助项（分支预警、其他预警、结果反转、数量/描述输出）以及全结构化结果外挂过滤流程。
 
 ### 2026-07-07
 
 - 根据最新平台算法配置截图，更新 `SKILL.md` 的新增算法流程：先找可见锚点，再做行为/关系/状态语义复核，最后只在需要时补窄反向排除。
-- 明确找锚点时优先使用英文 `多模态目标理解`，例如 `person`、`hand`、`car door`、`helmet`。
+- 明确找锚点时默认使用英文 `多模态目标理解`，例如 `person`、`hand`、`car door`、`helmet`、`underage people`；`通用目标理解` 只作为指定或实测更稳的例外。
 - 补充复杂截图策略里的解析模式选择：简单锚点、整图事件、多锚点局部交互分别处理，不再机械默认通用。
 - 补充 `正向思维` + `正向深度思维` 双语义复核，用于拉车门、未戴头盔、持械、翻越、拉横幅等细动作。
 - 补充阈值、远近比、启用区域框和添加到门户的使用边界，避免机械填 50 或默认开门户。
 - 补充未佩戴、脸部表情、奇装异服、持械暴力、交通事故、翻越栏杆、拉横幅、车辆载人等场景的通用编排规则。
 - 明确小物体和局部动作不能只靠目标标签，需补手部持有、拉拽、张贴、挥舞等动作确认。
-- 明确远近比和延伸比例只是目标上下文扩展，不应当当成业务判定条件。
+- 初步补充远近比和延伸比例的使用边界；精确定义见 2026-08-26 更新。
 - 强化 OR 使用边界：多个独立危险来源可以拆 OR，但每个分支必须包含本分支的目标和正向行为。
 
 ### 2026-07-01
@@ -185,9 +234,9 @@ update 模式不加 `--post` 只输出；加 `--post` 时脚本会查同名算�
 
 - 标准化输出为 Markdown 表格；只有真实 `--post` 请求并实际提交后，才追加提交结果表。
 - 修复新算法排序：用户未显式指定排序时，脚本读取现有算法列表并使用 `max(sort) + 1`；读取失败时停止，不再静默落到 `1`。
-- `post_theme_config.py` 支持解析 Markdown 表格和普通 `字段: 值` 两种 agent 输出。
-- 明确默认实时提交走 stdin：`--agent-output -`；`output.txt` 只作为调试/复现中转，避免读到旧内容。
-- 梳理上传链路：`--auto-login`、`--refresh-auth`、`--theme-data-page` 是预检/读路径；`--agent-output` 只在原始 `--user-request` 含独立 `--post` 时写入；`--config payload.json --post` 是直接 JSON 提交路径。
+- 当时支持解析 Markdown 表格和普通 `字段: 值` 两种 agent 输出；该入口已于 2026-08-27 删除，现仅接受 stdin JSON。
+- 当时实时提交使用 `--agent-output -`，`output.txt` 只作为调试/复现中转；两者已于 2026-08-27 一并删除。
+- 当时梳理了含 `--auto-login` 的上传链路；该入口已在 2026-08-26 随 8898 直登改造删除，Markdown 提交入口又于 2026-08-27 删除。
 - 加强动态鉴权说明：`/s/theme/*` 请求使用 `access_token + 当前毫秒时间戳` 生成 Authorization，并复用同一时间戳参数。
 - 对齐平台实测 `parsingId`：`counter`、`dmt_counter`、`ocr`、`logic_or`、`1`、`2`、`11`、`21`、`101`、`102`、`103`、`104`、`121`、`122` 等只保留有证据的映射。
 - 明确 `目标理解` 数字语义偏置信度/阈值，不是目标数量；只有目标理解类组件负责套框。
