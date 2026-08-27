@@ -1,39 +1,92 @@
 # 接口提交和鉴权
 
-本文件只记录 `scripts/post_theme_config.py` 的提交链路、`.env` 配置和鉴权规则。算法编排规则仍以 `SKILL.md` 为准。
+本文件集中记录 `scripts/post_theme_config.py` 的 8898 提交协议，以及 `scripts/algorithm_service.py` 的 9079 鉴权。算法编排规则仍以 `SKILL.md` 为准。
 
-## 基本原则
+## 8898 提交边界
 
-- `.env` 放本地鉴权和请求头，不要写进 `SKILL.md`。
-- 默认先 dry-run 或用 `--theme-data-page` 验证链路。
-- 真实写入必须由用户明确授权；`--agent-output` 模式下以原始 `--user-request` 里的独立 `--post` 为准。
-- 默认 post 必须使用 `--agent-output -` 从 stdin 读取 agent 刚生成的最终表格；只有特别要求调试、复现或留档时才读 `output.txt`。
-- `success: true` 且 `status` 为 `POST_SUCCEEDED_DO_NOT_RETRY`、`UPDATE_SUCCEEDED_DO_NOT_RETRY` 或 `ALREADY_EXISTS_DO_NOT_RETRY` 时，任务已完成，停止重试。
+- Markdown 表格只用于回复展示，不作为机器输入。
+- 提交只接受 `--payload -`，从 stdin 读取一个 JSON 对象；不读取配置文件或输出中转文件。
+- 是否写入只取决于原始 `--user-request` 末尾是否有独立 `--post`。没有时始终 dry-run。
+- 主题名来自用户的 `主题：...`，去掉首尾空格后按区分大小写的名称精确匹配；不固定为 `wbr`，也没有默认主题 ID。
+- 主题缺失、无匹配、同名对应多个 ID或目录鉴权失败时停止。
+- 同名查重和自动排序复用一次最多 200 条的主题分页结果。超过该上限的主题需先扩展分页逻辑，不能静默假设完整。
+- 新建发现同主题同名算法时返回 `ALREADY_EXISTS_DO_NOT_RETRY`。优化找不到同名算法时停止，不退化成新建。
+- 优化只覆盖 JSON 明确提供的字段；`false` 和空字符串是有效显式值，未提供字段保留平台原值。
 
-## 常用命令
+## 结构化 JSON
 
-| 命令 | 用途 |
+支持字段：
+
+| JSON 字段 | 含义 |
 | --- | --- |
-| `open scripts/configure_env_from_curl.command` | 弹出新窗口，粘贴三段 cURL 自动配置 `.env` |
-| `python3 scripts/post_theme_config.py --auto-login` | 验证主平台跳转链路 |
-| `python3 scripts/post_theme_config.py --refresh-auth` | 强制刷新 `DSVLM_ACCESS_TOKEN` |
-| `python3 scripts/post_theme_config.py --theme-data-page` | 只读算法列表；优先复用现有 token，失败才刷新 |
-| `python3 scripts/post_theme_config.py --theme-data-detail '算法id'` | 只读单条算法详情；用于 update 保存前合并原配置 |
-| `printf '%s\n' "$AGENT_OUTPUT" \| python3 scripts/post_theme_config.py --agent-output - --user-request '/dsvlm 场景：识别垃圾车 --垃圾车识别 --post'` | 用 stdin 提交 agent 刚生成的表格 |
-| `printf '%s\n' "$AGENT_OUTPUT" \| python3 scripts/post_theme_config.py --agent-output - --user-request '/dsvlm --识别火情 --update --灯光误报 --post'` | 查同名算法、读取详情并用 PUT 合并保存 |
+| `algorithm` | 算法名；原始请求中的 `算法名：...` 优先 |
+| `mode` | `通用模式`、`深度解析模式`、`深度串行解析` |
+| `level` | `一级预警` 至 `五级预警` |
+| `area_flag` | 是否启用区域框，布尔值 |
+| `portal_flag` | 是否添加到门户，布尔值 |
+| `docking_code` | 对接编码；可显式传空字符串清空 |
+| `sort` | 整数或 `auto` |
+| `extension_ratio` | 延伸比例 |
+| `target_extension_ratio` | 平台自定义目标延伸配置原值 |
+| `conditions` | 非空条件字符串数组；目标规则必须显式写 `阈值 N` |
+| `remark` | 备注 |
 
-## 登录和 token
+示例：
 
-- `--auto-login` 调主平台 `DSVLM_PORTAL_AUTO_LOGIN_URL`，用于确认能拿到 61.172 跳转地址。
-- `--refresh-auth` 调 `/s/sys/auth/login`，把返回的 `access_token` 写入 `DSVLM_ACCESS_TOKEN`。
-- `/dsvlm --config` 是 agent 入口：打开 `scripts/configure_env_from_curl.command`，让用户粘贴 `auto-login-url`、`login`、`theme data page` 三段 cURL 自动写 `.env`。
-- `--theme-data-page` 和真实 post 会先用当前 `DSVLM_ACCESS_TOKEN` 探活；token 缺失或探活失败时才刷新一次。
-- `/s/theme/*` 的 `Authorization` 不是固定值；脚本用 `DSVLM_DYNAMIC_AUTH=true` 按前端规则生成：`04 + SM2(access_token + 当前毫秒时间戳)`。
-- 如果不使用动态鉴权，需要在 `.env` 中显式设置 `DSVLM_AUTHORIZATION`。
+```bash
+printf '%s\n' '{
+  "algorithm": "垃圾车识别",
+  "mode": "通用模式",
+  "level": "二级预警",
+  "area_flag": true,
+  "portal_flag": false,
+  "docking_code": "",
+  "sort": "auto",
+  "conditions": [
+    "目标理解 / 多模态目标理解 / garbage truck / 大于 / 0 / 阈值 60",
+    "内容理解 / 正向思维1 / 图中存在正在作业的垃圾车"
+  ],
+  "remark": "自动解析测试"
+}' | python3 scripts/post_theme_config.py --payload - \
+  --user-request '/dsvlm 新建：识别垃圾车；算法名：垃圾车识别；主题：园区A --post'
+```
 
-## 主题和请求
+常用只读命令：
 
-- `--theme-data-page` 只读当前主题算法列表。
-- update 模式加 `--post` 时，脚本先按 `themeLabel` 找同名算法，再用 `GET /s/theme/data/{id}` 读取详情；保存时以详情为底稿合并新规则并用 `PUT /s/theme/data` 提交，找不到则停止，不新建。
-- `DSVLM_THEME_TYPE_ID` 对应主题，例如 `wbr`。
-- 请求头、接口地址和超时时间优先从 `.env` 读取；没有配置时脚本使用内置默认值。
+```bash
+python3 scripts/post_theme_config.py --theme-data-page --theme-name '园区A'
+python3 scripts/post_theme_config.py --theme-data-detail '算法id'
+python3 scripts/post_theme_config.py --refresh-auth
+```
+
+## 8898 鉴权
+
+长期配置只有三个键：
+
+- `DSVLM_LOGIN_USERNAME`
+- `DSVLM_LOGIN_PASSWORD`
+- `DSVLM_ALLOW_INSECURE_HTTP`
+
+`DSVLM_ACCESS_TOKEN` 是脚本登录后写入私有 `.env` 的运行时值，不放进 `.env.example`，也不手工维护。`scripts/configure_env.py` 仅在首次安装、`.env` 丢失或凭据变更时维护前三个键；密码不回显，文件权限为 `0600`。
+
+鉴权流程：
+
+1. 主题目录和详细配置共用 8898 登录，不再经过 8108。
+2. 登录端点是 `POST /s/sys/auth/login`。密码按当前前端规则使用 SM2 公钥加密并加 `04` 前缀。
+3. 验证码关闭时提交空 `key` 和 `captcha`。登录失败后才读取 `GET /s/sys/auth/captcha/enabled`；若已启用，返回 `CAPTCHA_REQUIRED` 并停止，不尝试绕过。
+4. 登录返回的 `access_token` 写入 `DSVLM_ACCESS_TOKEN`。
+5. `/s/theme/*` 请求使用 `04 + SM2(access_token + 当前毫秒时间戳)` 生成动态 `Authorization`，并在查询参数中使用同一时间戳。
+6. 主题目录为 `GET /s/theme/type/all`；`/#/data-task/task` 只是前端 hash 路由。
+
+8898 当前地址是明文 HTTP。客户端默认拒绝 HTTP 和重定向；只有确认目标主机及当前网络可信后，才在私有 `.env` 设置 `DSVLM_ALLOW_INSECURE_HTTP=true`。`.env.example` 必须保持 `false`。
+
+## 9079 算法服务
+
+9079 使用独立的 `DSVLM_SERVICE_*` 配置，不参与 8898 主题提交：
+
+```bash
+python3 scripts/algorithm_service.py --list
+python3 scripts/algorithm_service.py --add --name '穿黑衣的人' --text '识别穿黑衣的人' --type 1
+```
+
+9079 当前也是明文 HTTP；可信网络下才在私有 `.env` 设置 `DSVLM_SERVICE_ALLOW_INSECURE_HTTP=true`。`type=99` 时 `typeDescription` 必须至少包含一个中文字符。9079 `--add` 没有 `themeTypeId`，不能替代 8898 的主题内上传。

@@ -1,4 +1,8 @@
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+.env*
+!.env.example
+.DS_Store
+.vscode/
 output.txt
+loop_outputs/
